@@ -1,111 +1,179 @@
 <#
 .SYNOPSIS
-    Script de nettoyage sécurisé pour Windows.
+    Script de nettoyage Windows Avancé et Sécurisé.
     
 .DESCRIPTION
-    Ce script analyse et nettoie les caches npm/pip, les logs système et identifie les fichiers vidéo volumineux non utilisés.
-    Il privilégie la sécurité en demandant confirmation ou en déplaçant les fichiers vers un dossier temporaire.
+    Ce script effectue une maintenance complète du système : caches dev, logs, fichiers temporaires, et gestion des vidéos volumineuses.
+    Inclut la journalisation, la gestion des erreurs, et un mode simulation.
+
+.PARAMETER DryRun
+    Si présent, simule les actions sans supprimer de fichiers.
+
+.PARAMETER Silent
+    Si présent, exécute le script sans demander de confirmation (attention !).
 
 .NOTES
-    Auteur: Manus (Expert Administration Système)
-    Version: 1.0
+    Auteur: Manus AI
+    Version: 2.0
 #>
 
-$ErrorActionPreference = "SilentlyContinue"
+param (
+    [switch]$DryRun,
+    [switch]$Silent
+)
 
-# --- Configuration ---
-$VideoSizeThresholdMB = 500 # Taille minimale pour considérer une vidéo comme "volumineuse"
-$DaysSinceLastAccess = 30   # Nombre de jours d'inactivité pour les vidéos
-$TempCleanupDir = Join-Path $env:TEMP "WindowsCleanup_Staging"
+$ErrorActionPreference = "Stop"
+$LogFile = Join-Path $env:TEMP "WindowsCleanup_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+$TotalSpaceFreed = 0
 
-# --- Fonctions de support ---
-function Write-Header($Title) {
-    Write-Host "`n=== $Title ===" -ForegroundColor Cyan
-}
+# --- Fonctions de Support ---
 
-function Write-Success($Message) {
-    Write-Host "[OK] $Message" -ForegroundColor Green
-}
-
-function Write-Info($Message) {
-    Write-Host "[INFO] $Message" -ForegroundColor Gray
-}
-
-# --- 1. Nettoyage des caches de développement (npm & pip) ---
-Write-Header "Nettoyage des caches de développement"
-
-# npm cache
-if (Get-Command npm -ErrorAction SilentlyContinue) {
-    Write-Info "Analyse du cache npm..."
-    $npmCacheSize = (npm cache verify | Out-String)
-    Write-Host "Statut npm: $npmCacheSize"
-    $confirmNpm = Read-Host "Voulez-vous vider le cache npm ? (O/N)"
-    if ($confirmNpm -eq 'O') {
-        npm cache clean --force
-        Write-Success "Cache npm nettoyé."
-    }
-} else {
-    Write-Info "npm n'est pas installé sur ce système."
-}
-
-# pip cache
-if (Get-Command pip -ErrorAction SilentlyContinue) {
-    Write-Info "Analyse du cache pip..."
-    $confirmPip = Read-Host "Voulez-vous vider le cache pip ? (O/N)"
-    if ($confirmPip -eq 'O') {
-        pip cache purge
-        Write-Success "Cache pip nettoyé."
-    }
-} else {
-    Write-Info "pip n'est pas installé sur ce système."
-}
-
-# --- 2. Nettoyage des journaux système (Logs) ---
-Write-Header "Nettoyage des journaux système"
-$confirmLogs = Read-Host "Voulez-vous vider les journaux d'événements Windows ? (O/N)"
-if ($confirmLogs -eq 'O') {
-    $logs = Get-EventLog -List
-    foreach ($log in $logs) {
-        Clear-EventLog -LogName $log.Log
-        Write-Info "Journal $($log.Log) vidé."
-    }
-    Write-Success "Journaux système nettoyés."
-}
-
-# --- 3. Identification des fichiers vidéo volumineux ---
-Write-Header "Analyse des fichiers vidéo volumineux"
-Write-Info "Recherche de fichiers > $VideoSizeThresholdMB Mo non accédés depuis $DaysSinceLastAccess jours..."
-
-$videoExtensions = "*.mp4", "*.mkv", "*.avi", "*.mov", "*.wmv"
-$userProfile = $env:USERPROFILE
-$largeVideos = Get-ChildItem -Path $userProfile -Include $videoExtensions -Recurse -ErrorAction SilentlyContinue | 
-               Where-Object { $_.Length -gt ($VideoSizeThresholdMB * 1MB) -and $_.LastAccessTime -lt (Get-Date).AddDays(-$DaysSinceLastAccess) }
-
-if ($largeVideos) {
-    Write-Host "`nFichiers identifiés :" -ForegroundColor Yellow
-    $largeVideos | Select-Object Name, @{Name="Size(GB)";Expression={"{0:N2}" -f ($_.Length / 1GB)}}, LastAccessTime | Format-Table -AutoSize
-
-    $action = Read-Host "Actions : [D]éplacer vers dossier temporaire, [S]upprimer définitivement, [I]gnorer"
+function Write-Log($Message, $Level = "INFO") {
+    $TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $LogEntry = "[$TimeStamp] [$Level] $Message"
+    $LogEntry | Out-File -FilePath $LogFile -Append
     
-    if ($action -eq 'D') {
-        if (!(Test-Path $TempCleanupDir)) { New-Item -ItemType Directory -Path $TempCleanupDir | Out-Null }
-        foreach ($file in $largeVideos) {
-            Move-Item -Path $file.FullName -Destination $TempCleanupDir -Force
-            Write-Info "Déplacé : $($file.Name) -> $TempCleanupDir"
-        }
-        Write-Success "Fichiers déplacés vers $TempCleanupDir"
-    } elseif ($action -eq 'S') {
-        $confirmDelete = Read-Host "Êtes-vous SÛR de vouloir supprimer ces fichiers ? (O/N)"
-        if ($confirmDelete -eq 'O') {
-            $largeVideos | Remove-Item -Force
-            Write-Success "Fichiers supprimés."
-        }
-    } else {
-        Write-Info "Aucune action effectuée sur les vidéos."
+    $Color = switch ($Level) {
+        "SUCCESS" { "Green" }
+        "WARNING" { "Yellow" }
+        "ERROR"   { "Red" }
+        "HEADER"  { "Cyan" }
+        default   { "Gray" }
     }
-} else {
-    Write-Info "Aucun fichier vidéo volumineux correspondant aux critères n'a été trouvé."
+    
+    if ($Level -eq "HEADER") {
+        Write-Host "`n=== $Message ===" -ForegroundColor $Color
+    } else {
+        Write-Host "[$Level] $Message" -ForegroundColor $Color
+    }
 }
 
-Write-Header "Nettoyage terminé"
-Pause
+function Get-AdminStatus {
+    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Remove-FileSecurely($Path, $Size = 0) {
+    try {
+        if ($DryRun) {
+            Write-Log "[SIMULATION] Suppression de : $Path" "INFO"
+        } else {
+            if (Test-Path $Path) {
+                Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
+                $script:TotalSpaceFreed += $Size
+            }
+        }
+        return $true
+    } catch {
+        Write-Log "Impossible de supprimer $Path : $($_.Exception.Message)" "WARNING"
+        return $false
+    }
+}
+
+# --- Initialisation ---
+
+Write-Log "Démarrage du script de nettoyage" "HEADER"
+if ($DryRun) { Write-Log "MODE SIMULATION ACTIVÉ - Aucune modification réelle ne sera effectuée." "WARNING" }
+
+if (-not (Get-AdminStatus)) {
+    Write-Log "Le script n'est pas exécuté en tant qu'administrateur. Certaines fonctions seront limitées." "WARNING"
+}
+
+# --- 1. Caches de Développement ---
+Write-Log "Nettoyage des Caches de Développement" "HEADER"
+
+# npm
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+    if ($Silent -or (Read-Host "Nettoyer le cache npm ? (O/N)") -eq 'O') {
+        Write-Log "Nettoyage du cache npm..."
+        if (-not $DryRun) { npm cache clean --force }
+        Write-Log "Cache npm traité." "SUCCESS"
+    }
+}
+
+# Docker
+if (Get-Command docker -ErrorAction SilentlyContinue) {
+    if ($Silent -or (Read-Host "Nettoyer les ressources Docker inutilisées ? (O/N)") -eq 'O') {
+        Write-Log "Exécution de docker system prune..."
+        if (-not $DryRun) { docker system prune -f }
+        Write-Log "Docker nettoyé." "SUCCESS"
+    }
+}
+
+# --- 2. Fichiers Temporaires et Système ---
+Write-Log "Nettoyage Système et Temporaire" "HEADER"
+
+$TempPaths = @(
+    $env:TEMP,
+    "C:\Windows\Temp",
+    "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db",
+    "$env:APPDATA\Code\Cache",
+    "$env:APPDATA\Code\CachedData"
+)
+
+foreach ($Path in $TempPaths) {
+    if (Test-Path $Path) {
+        Write-Log "Traitement de : $Path"
+        $Files = Get-ChildItem -Path $Path -Recurse -ErrorAction SilentlyContinue
+        foreach ($File in $Files) {
+            Remove-FileSecurely $File.FullName $File.Length
+        }
+    }
+}
+
+# Corbeille
+if ($Silent -or (Read-Host "Vider la corbeille ? (O/N)") -eq 'O') {
+    Write-Log "Vidage de la corbeille..."
+    if (-not $DryRun) { Clear-RecycleBin -Confirm:$false -ErrorAction SilentlyContinue }
+    Write-Log "Corbeille vidée." "SUCCESS"
+}
+
+# --- 3. Vidage des Logs (Admin requis) ---
+if (Get-AdminStatus) {
+    if ($Silent -or (Read-Host "Vider les journaux d'événements Windows ? (O/N)") -eq 'O') {
+        Write-Log "Nettoyage des Event Logs..."
+        $Logs = Get-EventLog -List
+        foreach ($Log in $Logs) {
+            if (-not $DryRun) { Clear-EventLog -LogName $Log.Log }
+        }
+        Write-Log "Journaux système nettoyés." "SUCCESS"
+    }
+}
+
+# --- 4. Analyse des Vidéos Volumineuses ---
+Write-Log "Analyse des Vidéos Volumineuses" "HEADER"
+$VideoThreshold = 500MB
+$DaysOld = 30
+$StagingArea = Join-Path $env:TEMP "Cleanup_Staging"
+
+$Videos = Get-ChildItem -Path $env:USERPROFILE -Include *.mp4,*.mkv,*.avi -Recurse -ErrorAction SilentlyContinue |
+          Where-Object { $_.Length -gt $VideoThreshold -and $_.LastAccessTime -lt (Get-Date).AddDays(-$DaysOld) }
+
+if ($Videos) {
+    Write-Log "$($Videos.Count) vidéos volumineuses trouvées." "INFO"
+    $Videos | Select-Object Name, @{N="Size(MB)";E={"{0:N0}" -f ($_.Length/1MB)}}, LastAccessTime | Out-String | Write-Host
+    
+    $Action = if ($Silent) { "D" } else { Read-Host "Action pour les vidéos : [D]éplacer en staging, [S]upprimer, [I]gnorer" }
+    
+    if ($Action -eq 'D') {
+        if (-not (Test-Path $StagingArea)) { New-Item -ItemType Directory -Path $StagingArea | Out-Null }
+        foreach ($V in $Videos) {
+            Write-Log "Mise en staging : $($V.Name)"
+            if (-not $DryRun) { Move-Item $V.FullName $StagingArea -Force }
+        }
+        Write-Log "Vidéos déplacées vers $StagingArea" "SUCCESS"
+    } elseif ($Action -eq 'S') {
+        foreach ($V in $Videos) { Remove-FileSecurely $V.FullName $V.Length }
+        Write-Log "Vidéos supprimées." "SUCCESS"
+    }
+} else {
+    Write-Log "Aucune vidéo volumineuse non utilisée trouvée." "INFO"
+}
+
+# --- Conclusion ---
+$FreedGB = "{0:N2}" -f ($TotalSpaceFreed / 1GB)
+Write-Log "Nettoyage Terminé" "HEADER"
+Write-Log "Espace total libéré (estimé) : $FreedGB Go" "SUCCESS"
+Write-Log "Journal complet disponible ici : $LogFile" "INFO"
+
+if (-not $Silent) { Pause }
